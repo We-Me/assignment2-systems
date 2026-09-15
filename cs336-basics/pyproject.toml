@@ -1,6 +1,6 @@
 [project]
-name = "cs336-basics"
-version = "26.0.4"
+name = "cs336_basics"
+version = "26.0.0"
 description = "CS336 Assignment 1"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
@@ -19,6 +19,14 @@ dependencies = [
     "wandb>=0.25",
     "ty>=0.0.26",
     "ruff>=0.15.8",
+    "tensorboard>=2.21.0",
+    "tbparse>=0.0.9",
+    "matplotlib>=3.11.1",
+]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu128" },
 ]
 
 [build-system]
@@ -48,3 +56,16 @@ line-length = 120
 [tool.ruff.lint]
 extend-select = ["UP"]
 ignore = ["F722"]
+
+# Default Python package index
+[[tool.uv.index]]
+name = "tsinghua"
+url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/"
+default = true
+
+# PyTorch CUDA 128 aliyun PyTorch wheel source
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://mirrors.aliyun.com/pytorch-wheels/cu128/"
+format = "flat"
+explicit = true

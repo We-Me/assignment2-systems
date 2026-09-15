@@ -32,9 +32,11 @@ package = true
 python-preference = "managed"
 
 [tool.uv.sources]
-cs336-basics = { path = "./cs336-basics", editable = true } # Change this path to your assignment1-basics repo you want to use your own implementation!
-
-
+torch = [
+    { index = "pytorch-cu128" },
+]
+# Change this path to your assignment1-basics repo you want to use your own implementation!
+cs336-basics = { path = "./cs336-basics", editable = true }
 
 [tool.pytest.ini_options]
 log_cli = true
@@ -56,3 +58,16 @@ line-length = 180
 [tool.ruff.lint]
 extend-select = ["UP"]
 ignore = ["F722"]
+
+# Default Python package index
+[[tool.uv.index]]
+name = "tsinghua"
+url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/"
+default = true
+
+# PyTorch CUDA 128 aliyun PyTorch wheel source
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://mirrors.aliyun.com/pytorch-wheels/cu128/"
+format = "flat"
+explicit = true
