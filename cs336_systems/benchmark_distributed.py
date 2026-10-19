@@ -17,6 +17,7 @@ from cs336_basics.optim.adamw import AdamW
 from cs336_basics.optim.functions import gradient_clipping, lr_cosine_schedule
 from cs336_basics.transformer_lm import TransformerLM
 from cs336_systems.ddp import FlatDDP, NaiveDDP, OverlapDDP
+from cs336_systems.oss import ShardedOptimizer
 
 
 DDP_REGISTRY = {
@@ -113,13 +114,16 @@ def train(rank: int, args: argparse.Namespace, run_dir: str) -> None:
         model = DDP_REGISTRY[args.ddp](model)
         model.train()
 
-        optimizer = AdamW(
-            params=model.parameters(),
-            lr=float(args.lr),
-            betas=(float(args.beta_low), float(args.beta_high)),
-            eps=float(args.optim_eps),
-            weight_decay=float(args.weight_decay),
-        )
+        optimizer_kwargs = {
+            "lr": float(args.lr),
+            "betas": (float(args.beta_low), float(args.beta_high)),
+            "eps": float(args.optim_eps),
+            "weight_decay": float(args.weight_decay),
+        }
+        if args.oss:
+            optimizer = ShardedOptimizer(model.parameters(), AdamW, **optimizer_kwargs)
+        else:
+            optimizer = AdamW(params=model.parameters(), **optimizer_kwargs)
 
         generator = torch.Generator(device=device)
         generator.manual_seed(int(args.seed))
@@ -218,6 +222,9 @@ def train(rank: int, args: argparse.Namespace, run_dir: str) -> None:
                         )
                         for group in optimizer.param_groups:
                             group["lr"] = lr
+                        if args.oss:
+                            for group in optimizer.optimizer.param_groups:
+                                group["lr"] = lr
 
                         optimizer.step()
                         optimizer.zero_grad(set_to_none=True)
@@ -295,6 +302,7 @@ def main() -> None:
     parser.add_argument("--save_root", type=str, required=False, default="./outputs")
     parser.add_argument("--device", type=str, choices=("cuda", "cpu"), required=False, default="cuda")
     parser.add_argument("--ddp", type=str, choices=tuple(DDP_REGISTRY), required=False, default="naive")
+    parser.add_argument("--oss", action="store_true")
     parser.add_argument("--batch_size", type=int, required=False, default=4)
     parser.add_argument("--warm_steps", type=int, required=True)
     parser.add_argument("--mark_steps", type=int, required=True)
@@ -330,7 +338,7 @@ def main() -> None:
     os.makedirs(args.save_root, exist_ok=True)
     run_dir = os.path.join(
         args.save_root,
-        f"benchmark_{args.ddp}_ddp_{datetime.now().strftime('%Y_%m_%d_%H_%M_%S')}",
+        f"benchmark_{args.ddp}_ddp{'_oss' if args.oss else ''}_{datetime.now().strftime('%Y_%m_%d_%H_%M_%S')}",
     )
     run_dir = os.path.abspath(run_dir)
     os.makedirs(run_dir, exist_ok=True)
