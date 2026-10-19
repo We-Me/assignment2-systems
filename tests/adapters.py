@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import torch
 
+from cs336_systems.ddp import DDP
 
 
 def get_flashattention_autograd_function_pytorch() -> type:
@@ -51,10 +52,10 @@ def get_ddp(module: torch.nn.Module) -> torch.nn.Module:
         Instance of a DDP class.
     """
     # For example: return DDP(module)
-    raise NotImplementedError
+    return DDP(module=module)
 
 
-def ddp_on_after_backward(ddp_model: torch.nn.Module, optimizer: torch.optim.Optimizer):
+def ddp_on_after_backward(ddp_model: torch.nn.Module, optimizer: torch.optim.Optimizer) -> None:
     """
     Code to run after the backward pass is completed, but before we take
     an optimizer step.
@@ -66,7 +67,7 @@ def ddp_on_after_backward(ddp_model: torch.nn.Module, optimizer: torch.optim.Opt
             Optimizer being used with the DDP-wrapped model.
     """
     # For example: ddp_model.finish_gradient_synchronization()
-    raise NotImplementedError
+    ddp_model.finish_gradient_synchronization()
 
 
 def get_fsdp(module: torch.nn.Module, compute_dtype: torch.dtype | None = None) -> torch.nn.Module:
