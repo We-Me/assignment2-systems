@@ -14,16 +14,16 @@ import torch.multiprocessing as mp
 
 from cs336_basics.functions import cross_entropy_loss
 from cs336_basics.optim.adamw import AdamW
-from cs336_basics.optim.functions import gradient_clipping, lr_cosine_schedule
+from cs336_basics.optim.functions import lr_cosine_schedule
 from cs336_basics.transformer_lm import TransformerLM
-from cs336_systems.ddp import FlatDDP, NaiveDDP, OverlapDDP
-from cs336_systems.oss import ShardedOptimizer
+from cs336_systems.distributed import FlatDDP, FSDP, NaiveDDP, OverlapDDP, ShardedOptimizer
 
 
-DDP_REGISTRY = {
+IMPL_REGISTRY = {
     "naive": NaiveDDP,
     "flat": FlatDDP,
     "overlap": OverlapDDP,
+    "fsdp": FSDP,
 }
 
 WORLD_SIZE = 2
@@ -32,7 +32,7 @@ MASTER_PORT = 29500
 
 
 def get_autocast_context(args: argparse.Namespace, device: torch.device):
-    if args.bf16:
+    if args.bf16 and args.impl != "fsdp":
         return torch.autocast(device_type=device.type, dtype=torch.bfloat16)
     return nullcontext()
 
@@ -111,7 +111,11 @@ def train(rank: int, args: argparse.Namespace, run_dir: str) -> None:
             for index, block in enumerate(model.layers):
                 block.forward = torch.cuda.nvtx.range(f"TransformerBlock {index}")(block.forward)
 
-        model = DDP_REGISTRY[args.ddp](model)
+        if args.impl == "fsdp":
+            compute_dtype = torch.bfloat16 if args.bf16 else None
+            model = FSDP(model, compute_dtype=compute_dtype)
+        else:
+            model = IMPL_REGISTRY[args.impl](model)
         model.train()
 
         optimizer_kwargs = {
@@ -120,7 +124,9 @@ def train(rank: int, args: argparse.Namespace, run_dir: str) -> None:
             "eps": float(args.optim_eps),
             "weight_decay": float(args.weight_decay),
         }
-        if args.oss:
+        if args.impl == "fsdp":
+            optimizer = AdamW(params=model.parameters(), **optimizer_kwargs)
+        elif args.oss:
             optimizer = ShardedOptimizer(model.parameters(), AdamW, **optimizer_kwargs)
         else:
             optimizer = AdamW(params=model.parameters(), **optimizer_kwargs)
@@ -208,11 +214,7 @@ def train(rank: int, args: argparse.Namespace, run_dir: str) -> None:
                         comm_end = timeit.default_timer()
 
                     with (torch.cuda.nvtx.range("optimizer") if nvtx else nullcontext()):
-                        gradient_clipping(
-                            parameters=model.parameters(),
-                            max_l2_norm=float(args.max_l2_norm),
-                        )
-
+                        # Gradient clipping is omitted for comparability across implementations.
                         lr = lr_cosine_schedule(
                             t=step,
                             alpha_min=float(args.cosine_min),
@@ -297,11 +299,11 @@ def train(rank: int, args: argparse.Namespace, run_dir: str) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser("cs336 assignment2 DDP benchmark")
+    parser = argparse.ArgumentParser("cs336 assignment2 distributed benchmark")
     parser.add_argument("--seed", type=int, required=False, default=0)
     parser.add_argument("--save_root", type=str, required=False, default="./outputs")
     parser.add_argument("--device", type=str, choices=("cuda", "cpu"), required=False, default="cuda")
-    parser.add_argument("--ddp", type=str, choices=tuple(DDP_REGISTRY), required=False, default="naive")
+    parser.add_argument("--impl", type=str, choices=tuple(IMPL_REGISTRY), required=False, default="naive")
     parser.add_argument("--oss", action="store_true")
     parser.add_argument("--batch_size", type=int, required=False, default=4)
     parser.add_argument("--warm_steps", type=int, required=True)
@@ -329,16 +331,18 @@ def main() -> None:
     parser.add_argument("--optim_eps", type=float, required=False, default=1e-8)
     parser.add_argument("--weight_decay", type=float, required=False, default=1e-2)
 
-    parser.add_argument("--max_l2_norm", type=float, required=False, default=1e2)
     parser.add_argument("--cosine_min", type=float, required=False, default=1e-6)
     parser.add_argument("--warmup_iters", type=int, required=False, default=0)
     parser.add_argument("--cosine_iters", type=int, required=False, default=10000)
     args = parser.parse_args()
 
+    if args.impl == "fsdp" and args.oss:
+        raise ValueError("FSDP already shards optimizer state; --oss cannot be used with FSDP")
+
     os.makedirs(args.save_root, exist_ok=True)
     run_dir = os.path.join(
         args.save_root,
-        f"benchmark_{args.ddp}_ddp{'_oss' if args.oss else ''}_{datetime.now().strftime('%Y_%m_%d_%H_%M_%S')}",
+        f"benchmark_{args.impl}{'_oss' if args.oss else ''}_{datetime.now().strftime('%Y_%m_%d_%H_%M_%S')}",
     )
     run_dir = os.path.abspath(run_dir)
     os.makedirs(run_dir, exist_ok=True)
