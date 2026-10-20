@@ -2,7 +2,7 @@ import torch
 import torch.distributed as dist
 from torch import nn
 
-from .common import ShardInfo
+from .common import ShardInfo, free_weight, wait_gather
 
 
 LINEAR_WEIGHT_ATTRIBUTE = "weights"
@@ -31,27 +31,30 @@ def shard_linear(fsdp, module: nn.Module) -> None:
         shard_numel=shard_numel,
         shard_data=shard_data,
         kind="linear",
+        index=len(fsdp._shards),
     )
     fsdp._shards.append(info)
     fsdp._shard_by_id[id(shard_parameter)] = info
 
-    module.register_forward_pre_hook(lambda module, inputs, info=info: _gather_weight(fsdp, info))
-    module.register_forward_hook(lambda module, inputs, output, info=info: _free_weight(fsdp, info))
-    module.register_full_backward_pre_hook(lambda module, grad_output, info=info: _gather_weight(fsdp, info))
-    shard_parameter.register_post_accumulate_grad_hook(lambda parameter, info=info: _reduce_gradient(fsdp, info))
+    module.register_forward_pre_hook(lambda module, inputs, info=info: wait_gather(fsdp, info))
+    module.register_forward_hook(lambda module, inputs, output, info=info: _after_forward(fsdp, info))
+    module.register_full_backward_pre_hook(lambda module, grad_output, info=info: wait_gather(fsdp, info))
+    module.register_full_backward_hook(
+        lambda module, grad_input, grad_output, info=info: _after_backward(fsdp, info)
+    )
+    shard_parameter.register_post_accumulate_grad_hook(
+        lambda parameter, info=info: _reduce_gradient(fsdp, info)
+    )
 
 
-def _gather_weight(fsdp, info: ShardInfo) -> None:
-    gathered = [torch.empty_like(info.shard_data) for _ in range(fsdp.world_size)]
-    dist.all_gather(gathered, info.shard_data)
-    full = torch.cat(gathered)[:info.full_numel].reshape(info.full_shape)
-    if fsdp.compute_dtype is not None:
-        full = full.to(fsdp.compute_dtype)
-    info.parameter.data = full
+def _after_forward(fsdp, info: ShardInfo) -> None:
+    free_weight(info)
+    fsdp._prefetch(info.index + 2)
 
 
-def _free_weight(fsdp, info: ShardInfo) -> None:
-    info.parameter.data = info.shard_data
+def _after_backward(fsdp, info: ShardInfo) -> None:
+    free_weight(info)
+    fsdp._prefetch(info.index - 1)
 
 
 def _reduce_gradient(fsdp, info: ShardInfo) -> None:

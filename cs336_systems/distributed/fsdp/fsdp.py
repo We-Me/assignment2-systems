@@ -4,9 +4,9 @@ from torch import nn
 
 from cs336_basics.modules import Embedding, Linear
 
+from .common import ShardInfo, free_weight, start_gather
 from .embedding import shard_embedding
 from .linear import shard_linear
-from .common import ShardInfo
 
 
 class FSDP(nn.Module):
@@ -29,11 +29,24 @@ class FSDP(nn.Module):
                 shard_embedding(self, submodule)
 
     def forward(self, *args, **kwargs) -> torch.Tensor:
-        return self.module(*args, **kwargs)
+        self._prefetch(0)
+        self._prefetch(1)
+        output = self.module(*args, **kwargs)
+        self._prefetch(len(self._shards) - 1)
+        return output
+
+    def _prefetch(self, index: int) -> None:
+        if 0 <= index < len(self._shards):
+            start_gather(self, self._shards[index])
 
     def finish_gradient_synchronization(self) -> None:
         for info in self._shards:
-            info.parameter.data = info.shard_data
+            if info.gather_handle is not None:
+                info.gather_handle.wait()
+                info.gather_handle = None
+                info.gather_outputs = None
+
+            free_weight(info)
             if info.pending_grad is not None:
                 info.parameter.grad = info.pending_grad
                 info.pending_grad = None
